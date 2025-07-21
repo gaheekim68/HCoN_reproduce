@@ -1,11 +1,15 @@
+import os
 import numpy as np
-from utils import load_data, dotdict, seed_everything, accuracy, normalize_sparse_hypergraph_symmetric
+from utils import load_data, dotdict, seed_everything, accuracy, normalize_sparse_hypergraph_symmetric, load_custom_data
 from model import HCoN
 import torch
 from torch import optim
 import torch.nn.functional as F
-import os
 import argparse
+from tqdm import tqdm
+
+import datasets
+import edgnn_utils
 
 
 """
@@ -28,6 +32,7 @@ def training(data, args, s = 2021):
     
     idx_train = torch.LongTensor(data.idx_train).cuda()
     idx_test = torch.LongTensor(data.idx_test).cuda()
+    idx_val = torch.LongTensor(data.idx_val).cuda()
     labels = torch.LongTensor(np.where(data.labels)[1]).cuda()
 
     gamma = args.gamma
@@ -43,7 +48,8 @@ def training(data, args, s = 2021):
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=args.weight_decay)
     
     cost_val = []
-    for epoch in range(epochs):
+    for epoch in tqdm(range(epochs)):
+        
         model.train()
 
         recovered, x_output = model(hx1, hx2, X, hy1, hy2, Y, args.alpha, args.beta) 
@@ -57,14 +63,14 @@ def training(data, args, s = 2021):
         optimizer.step()
         
         
-#         loss_val = F.nll_loss(x_output[idx_val], labels[idx_val])
-#         cost_val.append(loss_val.item())
-#         acc_val = accuracy(x_output[idx_val], labels[idx_val])
+        loss_val = F.nll_loss(x_output[idx_val], labels[idx_val])
+        cost_val.append(loss_val.item())
+        acc_val = accuracy(x_output[idx_val], labels[idx_val])
         
         
-#         if epoch > args.early_stop and cost_val[-1] > np.mean(cost_val[-(args.early_stop+1):-1]):
-#             print("Early stopping...")
-#             break
+        if epoch > args.early_stop and cost_val[-1] > np.mean(cost_val[-(args.early_stop+1):-1]):
+            print("Early stopping...")
+            break
         
     # Test
     with torch.no_grad():
@@ -82,37 +88,61 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Hypergraph Collaborative Network (HCoN)')
     parser.add_argument('--gpu_id', type=str, nargs='?', default='0', help="device id to run")
     parser.add_argument('--dataname', type=str, nargs='?', default='citeseer', help="dataset to run")
+    parser.add_argument('--data_dir', type=str, default='../dataset/cocitation/citeseer')
+    parser.add_argument('--raw_data_dir', type=str, default='../edgnn-hypergraph-dataset/cocitation/citeseer')
+    parser.add_argument('--train_prop', type=float, default=0.5)
+    parser.add_argument('--valid_prop', type=float, default=0.25)
+    parser.add_argument('--lr', type=float, default=0.01)
+    parser.add_argument('--wd', type=float, default=1e-4)
+    parser.add_argument('--hd', type=int, default=64)
     setting = parser.parse_args()
     
     os.environ['CUDA_VISIBLE_DEVICES'] = setting.gpu_id
     os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
     device = torch.cuda.current_device()
     
-    H, X, Y, labels, idx_train_list, idx_test_list = load_data(setting.dataname)
+    #H, X, Y, labels, idx_train_list, idx_test_list = load_data(setting.dataname)
+
+    # dataset loading
+
+    data = datasets.HypergraphDataset(root=setting.data_dir, 
+                                      name=setting.dataname, 
+                                      path_to_download=setting.raw_data_dir,
+                                      transform=None).data
+    
+    split_idx_lst = []
+    for run in range(10):
+        split_idx = edgnn_utils.rand_train_test_idx(
+            data.y, train_prop=setting.train_prop, valid_prop=setting.valid_prop)
+        split_idx_lst.append(split_idx)
+
+    H, X, Y, labels, idx_train_list, idx_val_list, idx_test_list = load_custom_data(data, split_idx_lst)
         
     H_trainX = H.copy()
     Y = np.eye(H.shape[1])  # use identity matrix
     hx1, hx2 = normalize_sparse_hypergraph_symmetric(H_trainX)
     hy1, hy2 = normalize_sparse_hypergraph_symmetric(H_trainX.transpose())
-
     
-    if setting.dataname == "citeseer":
-        dim_hidden = 512
-        learning_rate = 0.001
-        weight_decay = 0.001
-        gamma = 10
-        alpha = 0.8
-        beta = 0.2
+    dim_hidden = setting.hd
+    learning_rate = setting.lr
+    weight_decay = setting.wd
+    gamma = 10
+    alpha = 0.8
+    beta = 0.2
     
-    
-    epochs = 200
+    epochs = 500
     seed = 2021
     early = 100
         
     acc_test = []
+
     for trial in range(idx_train_list.shape[0]):
-        idx_train = idx_train_list[trial]
-        idx_test = idx_test_list[trial]
+        # idx_train = idx_train_list[trial]
+        # idx_test = idx_test_list[trial]
+        idx_train = np.array(idx_train_list[trial]).astype(np.int64)
+        idx_val = np.array(idx_val_list[trial]).astype(np.int64)
+        idx_test = np.array(idx_test_list[trial]).astype(np.int64)
+
     
         data = dotdict()
         args = dotdict()
@@ -126,6 +156,7 @@ if __name__ == '__main__':
         data.hy2 = hy2
         data.labels = labels
         data.idx_train = idx_train
+        data.idx_val = idx_val
         data.idx_test = idx_test
         data.n_class = labels.shape[1]
 

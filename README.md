@@ -14,3 +14,8 @@ Please cite our paper if you find this code helpful to your research:
   year={2023},  
   publisher={IEEE}  
 }
+
+We added the `load_custom_data()` function to `utils.py` to load the dataset used in our experiments.
+To verify that the dataset is loaded correctly, we ran a simple MLP model using `run_mlp.py`.
+You can run the code using the `bash command.sh` script.
+The dataset is also included in the compressed file.

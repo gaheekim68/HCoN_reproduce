@@ -25,6 +25,50 @@ def seed_everything(seed=2021):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
     
+import numpy as np
+import torch
+from scipy.sparse import csr_matrix
+from sklearn.preprocessing import OneHotEncoder
+
+def load_custom_data(data, split_idx_lst):
+    """
+    Converts PyG-style data and split list into the format expected by run.py
+    Args:
+        data: PyG Data object with edge_index, x, y, num_hyperedges
+        split_idx_lst: list of dicts with 'train' and 'valid' keys
+    Returns:
+        H, X, Y, labels, idx_train_list, idx_val_list, idx_test_list
+    """
+
+    # 1. Incidence matrix H: [num_nodes, num_hyperedges]
+    row = data.edge_index[0].cpu().numpy()
+    col = data.edge_index[1].cpu().numpy()
+    N = data.x.shape[0]
+    M = data.num_hyperedges.item()
+    H = csr_matrix((np.ones(len(row)), (row, col)), shape=(N, M))
+
+    # 2. Node features X
+    X = csr_matrix(data.x.cpu().numpy())
+
+    # 3. Hyperedge features Y (identity matrix if featureless)
+    Y = np.eye(M)
+
+    # 4. One-hot labels
+    y = data.y.cpu().numpy().reshape(-1, 1)
+    enc = OneHotEncoder(sparse=False, categories='auto')
+    labels = enc.fit_transform(y)  # shape (N, C)
+
+    # 5. idx_train_list, idx_test_list from split_idx_lst
+    idx_train_list = [s['train'].cpu().numpy() for s in split_idx_lst]
+    idx_val_list = [s['valid'].cpu().numpy() for s in split_idx_lst]
+    idx_test_list = [s['test'].cpu().numpy() for s in split_idx_lst]
+    
+    idx_train_list = np.array(idx_train_list, dtype=object)
+    idx_val_list = np.array(idx_val_list, dtype=object)
+    idx_test_list = np.array(idx_test_list, dtype=object)
+
+    return H, X, Y, labels, idx_train_list, idx_val_list, idx_test_list
+
 
 def load_data(dataset_str):
     data_mat = scio.loadmat("data/{}.mat".format(dataset_str))
@@ -64,15 +108,27 @@ def accuracy(output, labels):
 
 def normalize_sparse_hypergraph_symmetric(H):
     
-    rowsum = np.array(H.sum(1))
-    r_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    r_inv_sqrt[np.isinf(r_inv_sqrt)] = 0.
-    D = sp.diags(r_inv_sqrt)
+    # rowsum = np.array(H.sum(1))
+    # r_inv_sqrt = np.power(rowsum, -0.5).flatten()
+    # r_inv_sqrt[np.isinf(r_inv_sqrt)] = 0.
+    # D = sp.diags(r_inv_sqrt)
     
-    colsum = np.array(H.sum(0))
-    r_inv_sqrt = np.power(colsum, -1).flatten()
-    r_inv_sqrt[np.isinf(r_inv_sqrt)] = 0.
-    B = sp.diags(r_inv_sqrt)
+    # colsum = np.array(H.sum(0))
+    # r_inv_sqrt = np.power(colsum, -1).flatten()
+    # r_inv_sqrt[np.isinf(r_inv_sqrt)] = 0.
+    # B = sp.diags(r_inv_sqrt)
+
+    # row normalization (Dv^{-1/2})
+    rowsum = np.array(H.sum(1)).flatten()
+    rowsum[rowsum == 0] = 1e-12  # ⚠️ zero 방지
+    r_inv_sqrt = np.power(rowsum, -0.5)
+    D = sp.diags(r_inv_sqrt)
+
+    # column normalization (De^{-1})
+    colsum = np.array(H.sum(0)).flatten()
+    colsum[colsum == 0] = 1e-12  # ⚠️ zero 방지
+    c_inv = np.power(colsum, -1)
+    B = sp.diags(c_inv)
     
     Omega = sp.eye(B.shape[0])
 
